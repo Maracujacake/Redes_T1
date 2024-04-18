@@ -49,19 +49,18 @@ def dados_recebidos(conexao, dados):
 
     # verifica se o ultimo elemento da lista criada anteriormente termina com \r\n e se sim, avalia os dados residuais
     if(linhas[-1].endswith(b'\r\n')):
-        if(dados_residuais == b''):
-            Conexao.dados_residuais = b''
-        elif(dados_recebidos != b''):
-            Conexao.dados_residuais = linhas.pop(-1)
+        Conexao.dados_residuais = b''
+    else:
+        Conexao.dados_residuais = linhas.pop(-1)
 
     for linha in linhas:
-        analisa_linha(conexao, linha)
+        analisa_linha(conexao, linha, dados)
 
     
-def analisa_linha(conexao, linha):
+def analisa_linha(conexao, linha, dados):
     linha = linha.strip() # remove espaços desnecessarios
     #analisa o conteudo da linha (padronizado para maiusculo) e compara com os comandos
-    if(linha[0:4].upper == b'PING'):
+    if linha[0:4].upper() == b'PING':
         send(conexao, b':server PONG server :%s\r\n' % linha.split()[1])
     elif linha[0:4].upper() == b'NICK':
         # atribui o apelido desejado a uma variavel temp
