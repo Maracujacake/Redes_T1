@@ -1,36 +1,167 @@
 #!/usr/bin/env python3
 import asyncio
 from tcp import Servidor
+from tcp import Conexao
 import re
+
+Conexao.dados_residuais = b''
 
 # vetores ou dicionarios (map) para armazenar os nomes
 ## transformar nomes para maiusculo para comparação
+nicks = {}
+canais = {}
 
-#
 
 def validar_nome(nome):
     return re.match(br'^[a-zA-Z][a-zA-Z0-9_-]*$', nome) is not None
 
 
 def sair(conexao):
-    print(conexao, 'conexão fechada')
+    # canais em que a conexao se encontra
+    canaisSaida = []
+    for canal in canais:
+        if conexao in canais[canal]:
+            canaisSaida += canais[canal]
+            # remove o canal em que a conexao se encontra de canais
+            canais[canal].pop(conexao)
+    
+    for conection in canaisSaida:
+        # envia uma mensagem em todos os canais que o usuário estava avisando sua saída
+        conection.enviar(b':%s QUIT :Connection closed\r\n' % nicks[conexao])
+
+    # apelidos que o usuário nao está mais utilizando nao precisam ser salvos
+    if nicks.get(conexao) is not None:
+        nicks.pop(conexao)
+
+    # encerra conexao
     conexao.fechar()
 
 
 def dados_recebidos(conexao, dados):
     if dados == b'':
         return sair(conexao)
-    print(conexao, dados)
 
+    # como recomendado no README.md original do projeto
+    dados = Conexao.dados_residuais + dados
 
+    #armazena todas as linhas terminadas em \r\n separando-as por estes (\r\n)
+    linhas = dados.split(b'\r\n')
+
+    # verifica se o ultimo elemento da lista criada anteriormente termina com \r\n e se sim, avalia os dados residuais
+    if(linhas[-1].endswith(b'\r\n')):
+        if(dados_residuais == b''):
+            Conexao.dados_residuais = b''
+        elif(dados_recebidos != b''):
+            Conexao.dados_residuais = linhas.pop(-1)
+
+    for linha in linhas:
+        analisa_linha(conexao, linha)
+
+    
+def analisa_linha(conexao, linha):
+    linha = linha.strip() # remove espaços desnecessarios
+    #analisa o conteudo da linha (padronizado para maiusculo) e compara com os comandos
+    if(linha[0:4].upper == b'PING'):
+        send(conexao, b':server PONG server :%s\r\n' % linha.split()[1])
+    elif linha[0:4].upper() == b'NICK':
+        # atribui o apelido desejado a uma variavel temp
+        nome = linha.split(b' ',1)[1]
+        # Se nome for válido
+        if validar_nome(nome):
+            nome_anterior = nicks.get(conexao)
+            # Se estiver vazio atribui b'*' a variável nome_anterior
+            if nome_anterior is None:
+                nome_anterior = b'*'
+            # Verifica se o nome já está em uso
+            if nome.lower() in nicks.values():
+                send(conexao, b':server 433 %s %s :Nickname is already in use\r\n' % (nome_anterior, nome))
+            # Se o nome não estiver em uso 
+            elif nome_anterior == b'*':
+                send(conexao, b':server 001 %s :Welcome\r\n' % nome)
+                send(conexao, b':server 422 %s :MOTD File is missing\r\n' % nome)
+                # adiciona na lista
+                nicks[conexao] = nome.lower()
+            # Trocar nome
+            else:
+                nicks[conexao] = nome.lower()
+                send(conexao, b':%s NICK %s\r\n' % (nome_anterior, nome))
+        # Se nome for inválido
+        else:
+            send(conexao, b':server 432 * %s :Erroneous nickname\r\n' % nome)
+
+    elif linha[0:7].upper() == b'PRIVMSG':
+        # Salva o nome de quem envia a mensagem privada
+        transmissor = nicks[conexao].lower()
+        # Salva o nome de quem vai receber a mensagem e a mensagem
+        receptor, mensagem = linha.split()[1:]
+        receptor = receptor.lower()
+        # Mensagem para um canal
+        if receptor.startswith(b'#'):
+            # Remove o b'#'
+            canal = receptor[1:]
+            # Achar a conexao associada ao nome
+            for c in canais[canal]:
+                # Não manda a mensagem para quem a enviou
+                if(c != conexao):
+                    # Envia mensagem
+                    send(c, b':%s PRIVMSG #%s %s\r\n' % (transmissor, canal, mensagem))
+        # Mensagem privada para usuário
+        elif receptor in nicks.values():
+            # Achar a conexao associada ao nome
+            for conexao, nome in nicks.items():
+                if nome == receptor:
+                    send(conexao, b':%s PRIVMSG %s %s\r\n' % (transmissor, receptor, mensagem))
+
+    elif linha[0:4].upper() == b'JOIN':
+        canal = linha.split()[1][1:]
+        if validar_nome(canal):
+            # Cria o dicionário se ainda não existir
+            if canais.get(canal) is None:
+                canais[canal] = {}
+            
+            # Adiciona o nick
+            canais[canal][conexao] = nicks[conexao]
+            
+            # Envia a mensagem de que usuário entrou no canal
+            for conection in canais[canal]:
+                if (conection != conexao):
+                    conection.enviar(b':%s JOIN :#%s\r\n' % (nicks[conexao], canal))
+            
+            # Envia as mensagens de entrar e listar membros para o usuário que entrou no canal
+            conexao.enviar(b':%s JOIN :#%s\r\n' % (nicks[conexao], canal) +
+                        b':server 353 %s = #%s :' % (nicks[conexao], canal))
+
+            # Cria uma string com os membros em ordem alfabética separados por b' '
+            mensagem = b' '.join(sorted(nicks[conexao] for conexao in canais[canal]))
+            conexao.enviar(mensagem + b'\r\n')
+
+            # Envia a mensagem de fim da lista de membros para quem usuário que entrou no canal
+            conexao.enviar(b':server 366 %s #%s :End of /NAMES list.\r\n' % (nicks[conexao], canal))
+        
+            
+            '''conexao.enviar(
+                b':' + nicks[conexao] + b' JOIN :#' + canal + b'\r\n' +
+                b':server 353 ' + nicks[conexao] + b' = #' + canal + b' :' +
+                membros + b'\r\n' +
+                b':server 366 ' + nicks[conexao]+b' #'+canal+b' :End of /NAMES list.\r\n')'''
+        else:
+            send(conexao, b':server 403 %s :No such channel\r\n' % canal)
+
+    elif linha[0:4].upper() == b'PART':
+        canal = linha.split()[1][1:]
+        if validar_nome(canal):
+            for c in canais[canal]:
+                send(c, b':%s PART #%s\r\n' % (nicks[conexao], canal))
+            canais[canal].pop(conexao)
+        else:
+            send(conexao, b':server 403 %s :No such channel\r\n' % canal)
+def send(conexao, dados):
+    #print(dados)
+    conexao.enviar(dados)
+        
 def conexao_aceita(conexao):
-    print(conexao, 'nova conexão')
+    #print(conexao, 'nova conexão')
     conexao.registrar_recebedor(dados_recebidos)
-
-# ao entrar em um canal, deve-se printar o nome do usuario
-## ao sair do canal, além da mensagem, também deve-se printar o nick
-
-
 
 servidor = Servidor(6667)
 servidor.registrar_monitor_de_conexoes_aceitas(conexao_aceita)
