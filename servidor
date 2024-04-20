@@ -136,13 +136,6 @@ def analisa_linha(conexao, linha, dados):
 
             # Envia a mensagem de fim da lista de membros para quem usuário que entrou no canal
             conexao.enviar(b':server 366 %s #%s :End of /NAMES list.\r\n' % (nicks[conexao], canal))
-        
-            
-            '''conexao.enviar(
-                b':' + nicks[conexao] + b' JOIN :#' + canal + b'\r\n' +
-                b':server 353 ' + nicks[conexao] + b' = #' + canal + b' :' +
-                membros + b'\r\n' +
-                b':server 366 ' + nicks[conexao]+b' #'+canal+b' :End of /NAMES list.\r\n')'''
         else:
             send(conexao, b':server 403 %s :No such channel\r\n' % canal)
 
